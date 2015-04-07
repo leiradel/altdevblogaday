@@ -25,7 +25,7 @@
   return 1 + 2;
 }</pre>
 
-<center><table borser="0"><tr valign="center"><td><img src="http://htmlpreview.github.io/?https://raw.github.com/leiradel/altdevblogaday/blob/master/article8/avm_4_cf1a.png"/></td><td width="50"></td><td><img src="http://htmlpreview.github.io/?https://raw.github.com/leiradel/altdevblogaday/blob/master/article8/avm_4_right_arrow.png"/></td><td width="50"></td><td><img src="http://htmlpreview.github.io/?https://raw.github.com/leiradel/altdevblogaday/blob/master/article8/avm_4_cf1b.png"/></td></tr><tr align="center"><td>AST for 1 + 2</td><td/><td/><td/><td>Optimized AST for 1 + 2</td></tr></table></center>
+<center><table borser="0"><tr valign="center"><td><img src="https://raw.githubusercontent.com/leiradel/altdevblogaday/master/article8/avm_4_cf1a.png"/></td><td width="50"></td><td><img src="https://raw.githubusercontent.com/leiradel/altdevblogaday/master/article8/avm_4_right_arrow.png"/></td><td width="50"></td><td><img src="https://raw.githubusercontent.com/leiradel/altdevblogaday/master/article8/avm_4_cf1b.png"/></td></tr><tr align="center"><td>AST for 1 + 2</td><td/><td/><td/><td>Optimized AST for 1 + 2</td></tr></table></center>
 
 <p>To achieve this optimization all we have to do is traverse the AST looking for operators with constant operands, and swap them by a constant which holds the result of the operation. One thing to look out for is the result type. Taking the addition operator as an example, if one operand in an integer and the other a float, the result must have the float type because of <a href="http://en.wikipedia.org/wiki/Type_conversion">implicit type conversion</a>.</p>
 
@@ -67,7 +67,7 @@
 
 <p>Its AST and what we want it to become after constant propagation are:</p>
 
-<center><table borser="0"><tr valign="center"><td><img src="http://htmlpreview.github.io/?https://raw.github.com/leiradel/altdevblogaday/blob/master/article8/avm_4_cp1a.png"/></td><td width="50"></td><td><img src="http://htmlpreview.github.io/?https://raw.github.com/leiradel/altdevblogaday/blob/master/article8/avm_4_right_arrow.png"/></td><td width="50"></td><td><img src="http://htmlpreview.github.io/?https://raw.github.com/leiradel/altdevblogaday/blob/master/article8/avm_4_cp1b.png"/></td></tr><tr align="center"><td>AST for 0 * x</td><td/><td/><td/><td>Optimized AST for 0 * x</td></tr></table></center>
+<center><table borser="0"><tr valign="center"><td><img src="https://raw.githubusercontent.com/leiradel/altdevblogaday/master/article8/avm_4_cp1a.png"/></td><td width="50"></td><td><img src="https://raw.githubusercontent.com/leiradel/altdevblogaday/master/article8/avm_4_right_arrow.png"/></td><td width="50"></td><td><img src="https://raw.githubusercontent.com/leiradel/altdevblogaday/master/article8/avm_4_cp1b.png"/></td></tr><tr align="center"><td>AST for 0 * x</td><td/><td/><td/><td>Optimized AST for 0 * x</td></tr></table></center>
 
 <p>Right? Well, not quite. For example, what do you expect to be printed by this C code?</p>
 
@@ -86,7 +86,7 @@ int main( void )
 
 <p>Yes, that's correct. <b>0</b> and <b>2</b>. So despite being weird that code is valid and does what we expect after giving it some thought. <b>x</b> must be zero and <b>y</b> must be <b>2</b> since it starts with <b>1</b> but is incremented by <b>1</b> later. So, when optimizing <b>0 * x</b> we have to guarantee that the right operand is executed (conversely, if the right operand is zero we must make sure that the left operand is executed):</p>
 
-<center><table borser="0"><tr valign="center"><td><img src="http://htmlpreview.github.io/?https://raw.github.com/leiradel/altdevblogaday/blob/master/article8/avm_4_cp1a.png"/></td><td width="50"></td><td><img src="http://htmlpreview.github.io/?https://raw.github.com/leiradel/altdevblogaday/blob/master/article8/avm_4_right_arrow.png"/></td><td width="50"></td><td><img src="http://htmlpreview.github.io/?https://raw.github.com/leiradel/altdevblogaday/blob/master/article8/avm_4_cp1c.png"/></td></tr><tr align="center"><td>AST for 0 * x</td><td/><td/><td/><td>Correctly optimized AST for 0 * x</td></tr></table></center>
+<center><table borser="0"><tr valign="center"><td><img src="https://raw.githubusercontent.com/leiradel/altdevblogaday/master/article8/avm_4_cp1a.png"/></td><td width="50"></td><td><img src="https://raw.githubusercontent.com/leiradel/altdevblogaday/master/article8/avm_4_right_arrow.png"/></td><td width="50"></td><td><img src="https://raw.githubusercontent.com/leiradel/altdevblogaday/master/article8/avm_4_cp1c.png"/></td></tr><tr align="center"><td>AST for 0 * x</td><td/><td/><td/><td>Correctly optimized AST for 0 * x</td></tr></table></center>
 
 <p>So we're returning an expression with two values? Of course not. The optimized AST is the same as the AST for this code:</p>
 
@@ -145,7 +145,7 @@ int main( void )
 
 <p>Since the <b>if</b> condition is always false, there's no way execution can reach the <b>return 0</b> code so we can eliminate it:</p>
 
-<center><table borser="0"><tr valign="center"><td><img src="http://htmlpreview.github.io/?https://raw.github.com/leiradel/altdevblogaday/blob/master/article8/avm_4_dc1a.png"/></td><td width="50"></td><td><img src="http://htmlpreview.github.io/?https://raw.github.com/leiradel/altdevblogaday/blob/master/article8/avm_4_right_arrow.png"/></td><td width="50"></td><td><img src="http://htmlpreview.github.io/?https://raw.github.com/leiradel/altdevblogaday/blob/master/article8/avm_4_dc1b.png"/></td></tr><tr align="center"><td>AST for source code</td><td/><td/><td/><td>Optimized AST</td></tr></table></center>
+<center><table borser="0"><tr valign="center"><td><img src="https://raw.githubusercontent.com/leiradel/altdevblogaday/master/article8/avm_4_dc1a.png"/></td><td width="50"></td><td><img src="https://raw.githubusercontent.com/leiradel/altdevblogaday/master/article8/avm_4_right_arrow.png"/></td><td width="50"></td><td><img src="https://raw.githubusercontent.com/leiradel/altdevblogaday/master/article8/avm_4_dc1b.png"/></td></tr><tr align="center"><td>AST for source code</td><td/><td/><td/><td>Optimized AST</td></tr></table></center>
 
 <p>There are other places from where we can remove dead code: <b>for</b>, <b>while</b> and <b>do ... while</b> statements, the ternary operator, and constant statements (i.e. <b>5;</b>.) The complete list of nodes where this optimization is applied is:</p>
 
@@ -173,7 +173,7 @@ int main( void )
 
 <p>Its AST and the optimized AST are:</p>
 
-<center><table borser="0"><tr valign="center"><td><img src="http://htmlpreview.github.io/?https://raw.github.com/leiradel/altdevblogaday/blob/master/article8/avm_4_df1a.png"/></td><td width="50"></td><td><img src="http://htmlpreview.github.io/?https://raw.github.com/leiradel/altdevblogaday/blob/master/article8/avm_4_right_arrow.png"/></td><td width="50"></td><td><img src="http://htmlpreview.github.io/?https://raw.github.com/leiradel/altdevblogaday/blob/master/article8/avm_4_df1b.png"/></td></tr><tr align="center"><td>AST for source code</td><td/><td/><td/><td>Optimized AST</td></tr></table></center>
+<center><table borser="0"><tr valign="center"><td><img src="https://raw.githubusercontent.com/leiradel/altdevblogaday/master/article8/avm_4_df1a.png"/></td><td width="50"></td><td><img src="https://raw.githubusercontent.com/leiradel/altdevblogaday/master/article8/avm_4_right_arrow.png"/></td><td width="50"></td><td><img src="https://raw.githubusercontent.com/leiradel/altdevblogaday/master/article8/avm_4_df1b.png"/></td></tr><tr align="center"><td>AST for source code</td><td/><td/><td/><td>Optimized AST</td></tr></table></center>
 
 <p>By traversing the tree in depth-first order, we will reach and optimize the <b>Mul</b> node first, which will result in the constant <b>6</b>, then we'll return to its parent node <b>Add</b> where it will have two constant nodes as its operands and will optimize them to the constant <b>7</b>.</p>
 
