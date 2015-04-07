@@ -1,0 +1,325 @@
+<h1>Auto-vectorization for the Masses (part 4 of n): Optimization</h1>
+
+<p>After validating our SimpleC programs both syntactically and semantically, it's now time to analyze the AST tree and do some optimizations before we generate code. My original idea was to make constant folding optimization only, but it turns out that it's really easy to do some other optimizations at the same time, so why not?<p>
+
+<h2>Optimizing the AST</h2>
+
+<p>It's quite handy to have an AST we can analyze and optimize. By being able to query any node at any time, to remove child nodes and exchange some nodes for others we can easily implement the kind of optimizations we're used to get from regular compilers:</p>
+
+<ul>
+<li><a href="http://en.wikipedia.org/wiki/Constant_folding">Constant folding</a>: when the operands to logic/arithmetic operations are constants we can swap the operation by its result in compile-time (ex. <b>1 + 2</b> is swapped by <b>3</b>)</li>
+<li><a href="http://en.wikipedia.org/wiki/Constant_folding#Constant_propagation">Constant propagation</a>: when one of the operands is constant and determines the outcoming of the operation independently of the other operand we can swap the operation by its known outcome (ex. <b>x * 0</b> is swapped by <b>0</b> - not quite actually, we'll talk about it later)</li>
+<li><a href="http://en.wikipedia.org/wiki/Dead_code_elimination">Dead code elimination</a>: when the compiler determines a chunk of code cannot be reached we can remove it from the AST (ex. <b>if (0) { /* if there's code in the program but no program counter to execute it, are there visible side effects? */ }</b> is removed)</li>
+</ul>
+
+<p><b>Disclaimer</b>: I'm not a compiler expert. If you find that some concept or definition is being misused here please let me know and I'll update the article.</p>
+
+<p>Let's see some ASTs exemplifying each one of the optimizations to make it clear what we must look for in the ASTs and how we must change them to achieve the optimizations.</p>
+
+<h2>Constant Folding</h2>
+
+<p>Let's see the AST for this little SimpleC program and what we want it to become (note: I'm cutting part of the AST to show only the <b>return</b> branch):</p>
+
+<pre lang="c" escaped="true">int ConstantFolding()
+{
+  return 1 + 2;
+}</pre>
+
+<center><table borser="0"><tr valign="center"><td><img src="avm_4_cf1a.png"/></td><td width="50"></td><td><img src="avm_4_right_arrow.png"/></td><td width="50"></td><td><img src="avm_4_cf1b.png"/></td></tr><tr align="center"><td>AST for 1 + 2</td><td/><td/><td/><td>Optimized AST for 1 + 2</td></tr></table></center>
+
+<p>To achieve this optimization all we have to do is traverse the AST looking for operators with constant operands, and swap them by a constant which holds the result of the operation. One thing to look out for is the result type. Taking the addition operator as an example, if one operand in an integer and the other a float, the result must have the float type because of <a href="http://en.wikipedia.org/wiki/Type_conversion">implicit type conversion</a>.</p>
+
+<p>The list of all nodes that do constant folding is:</p>
+
+<ul>
+<li><b>AddExpr</b></li>
+<li><b>AndExpr</b></li>
+<li><b>BitwiseAndExpr</b></li>
+<li><b>BitwiseOrExpr</b></li>
+<li><b>BitwiseXorExpr</b></li>
+<li><b>CastExpr</b>, where we convert the constant operand to the type defined by the cast operation</li>
+<li><b>DivExpr</b></li>
+<li><b>EqualityExpr</b></li>
+<li><b>GreaterEqualExpr</b></li>
+<li><b>GreaterThanExpr</b></li>
+<li><b>InequalityExpr</b></li>
+<li><b>InvertExpr</b></li>
+<li><b>LessEqualExpr</b></li>
+<li><b>LessThanExpr</b></li>
+<li><b>MulExpr</b></li>
+<li><b>NegateExpr</b></li>
+<li><b>NotExpr</b></li>
+<li><b>OrExpr</b></li>
+<li><b>RemExpr</b></li>
+<li><b>ShiftLeftExpr</b></li>
+<li><b>ShiftRightExpr</b></li>
+<li><b>SubExpr</b></li>
+</ul>
+
+<h2>Constant Propagation</h2>
+
+<p>Now let's consider this piece of code:</p>
+
+<pre lang="c" escaped="true">int ConstantPropagation( int x )
+{
+  return 0 * x;
+}</pre>
+
+<p>Its AST and what we want it to become after constant propagation are:</p>
+
+<center><table borser="0"><tr valign="center"><td><img src="avm_4_cp1a.png"/></td><td width="50"></td><td><img src="avm_4_right_arrow.png"/></td><td width="50"></td><td><img src="avm_4_cp1b.png"/></td></tr><tr align="center"><td>AST for 0 * x</td><td/><td/><td/><td>Optimized AST for 0 * x</td></tr></table></center>
+
+<p>Right? Well, not quite. For example, what do you expect to be printed by this C code?</p>
+
+<pre lang="c" escaped="true">#include &lt;stdio.h&gt;
+
+int main( void )
+{
+  int x = 1, y = 1;
+  
+  x = 0 * ( y += 1 ); // <- Whaaat???
+  
+  printf( "x=%d, y=%d\n", x, y );
+  
+  return 0;
+}</pre>
+
+<p>Yes, that's correct. <b>0</b> and <b>2</b>. So despite being weird that code is valid and does what we expect after giving it some thought. <b>x</b> must be zero and <b>y</b> must be <b>2</b> since it starts with <b>1</b> but is incremented by <b>1</b> later. So, when optimizing <b>0 * x</b> we have to guarantee that the right operand is executed (conversely, if the right operand is zero we must make sure that the left operand is executed):</p>
+
+<center><table borser="0"><tr valign="center"><td><img src="avm_4_cp1a.png"/></td><td width="50"></td><td><img src="avm_4_right_arrow.png"/></td><td width="50"></td><td><img src="avm_4_cp1c.png"/></td></tr><tr align="center"><td>AST for 0 * x</td><td/><td/><td/><td>Correctly optimized AST for 0 * x</td></tr></table></center>
+
+<p>So we're returning an expression with two values? Of course not. The optimized AST is the same as the AST for this code:</p>
+
+<pre lang="c" escaped="true">int ConstantPropagation( int x )
+{
+  return x, 0;
+}</pre>
+
+<p>Expressions in C (and SimpleC) can be a comma-separated list of sub-expressions. The result of such a list is the value of the last expression in the list. In this example, the value returned from <b>ConstantPropagation</b> is <b>0</b>, but we're also making sure that <b>x</b> is evaluated with all its side effects. In this example it's clear that we could do it without evaluating <b>x</b> because it has no side effects, but we won't be doing this kind of analysis (of which nodes have side effects and which don't.) so <b>x * 0</b> and <b>0 * x</b> are always converted to <b>x, 0</b>.</p>
+
+<p>But things are different for logical operators. Consider the following SimpleC code:</b>
+
+<pre lang="c" escaped="true">int LogicalConstantPropagation( int x )
+{
+  int a = x && 0;
+  int b = 0 && x;
+  int c = x || 1;
+  int d = 1 || x;
+}</pre>
+
+<p>The first expression is always false, but was we've learned we must evaluate <b>x</b> so it becomes <b>x, 0</b>. The second expression is also always false, but we don't have to evaluate <b>x</b> because <b>&&</b> is a <a href="http://en.wikipedia.org/wiki/Short-circuit_evaluation">short-circuit operator</a> so <b>x</b> is never evaluated and the expression evaluates to <b>0</b>. The third expression becomes <b>x, 1</b> and the fourth <b>1</b></p>
+
+<p><b>Note</b>: In C, the <b>&&</b> and <b>||</b> operators always result in values <b>0</b> or <b>1</b>, so the expression <b>0 || x</b> can't be evaluated just as <b>x</b>. What we must do in this case is evaluate it as <b>x == 0 ? 0 : 1</b>.</p>
+
+<p><b>Note 2</b>: In SimpleC, the <b>&&</b> and <b>||</b> operators will result in values <b>0</b> or <b>-1</b> because we're targeting SIMD and in this case we can use select instructions to, well, select values in SIMD registers and by using <b>0</b> and <b>-1</b> we can use those values as-is in select instructions instead of generating an additional instruction to map values different from <b>0</b> to <b>-1</b>.</p>
+
+<p>The list of all nodes that do constant propagation is:</p>
+
+<ul>
+<li><b>AddExpr</b></li>
+<li><b>AndExpr</b></li>
+<li><b>BitwiseAndExpr</b></li>
+<li><b>BitwiseOrExpr</b></li>
+<li><b>BitwiseXorExpr</b></li>
+<li><b>DivExpr</b></li>
+<li><b>MulExpr</b></li>
+<li><b>OrExpr</b></li>
+<li><b>SubExpr</b></li>
+</ul>
+
+<h2>Dead Code Elimination</h2>
+
+<p>The last optimization we'll be doing is to remove code that is guaranteed not to be reached. We're already doing it in the <b>0 && x</b> and <b>1 || x</b> cases (so maybe those two should be listed here?) but there are other cases where we can remove dead code. Lets check the following code:</p>
+
+<pre lang="c" escaped="true">int DeadCodeElimination()
+{
+  if ( 0 )
+  {
+    return 0;
+  }
+  else
+  {
+    return -1;
+  }
+}</pre>
+
+<p>Since the <b>if</b> condition is always false, there's no way execution can reach the <b>return 0</b> code so we can eliminate it:</p>
+
+<center><table borser="0"><tr valign="center"><td><img src="avm_4_dc1a.png"/></td><td width="50"></td><td><img src="avm_4_right_arrow.png"/></td><td width="50"></td><td><img src="avm_4_dc1b.png"/></td></tr><tr align="center"><td>AST for source code</td><td/><td/><td/><td>Optimized AST</td></tr></table></center>
+
+<p>There are other places from where we can remove dead code: <b>for</b>, <b>while</b> and <b>do ... while</b> statements, the ternary operator, and constant statements (i.e. <b>5;</b>.) The complete list of nodes where this optimization is applied is:</p>
+
+<ul>
+<li><b>CompoundStmt</b> where we check for constant statements and remove them</li>
+<li><b>DoStmt</b> where we swap the entire statement for its body if the condition is the <b>0</b> constant</li>
+<li><b>Expression</b> where we remove constant sub-expressions except the last one which is the result of the entire expression (if the last sub-expression is all that is left and it's a constant it'll be removed inside <b>CompoundStmt</b> or <b>Function</b>)</li>
+<li><b>ForStmt</b> where we swap the entire statement for its initialization part if the condition is the <b>0</b> constant</li>
+<li><b>Function</b> where the same logic as <b>CompoundStatement</b> is applied</li>
+<li><b>IfStmt</b> where we swap the entire statement for its <i>then-part</i> if the condition is a constant different from <b>0</b> or for its <i>else-part</i> if the condition is the <b>0</b> constant</li>
+<li><b>TernaryExpr</b> where we apply the same logic as in <b>IfStmt</b></li>
+<li><b>WhileStmt</b> where we swap the entire statement for a constant <b>0</b> that will be removed by <b>CompoundStmt</b> or <b>Function</b> if the condition is the <b>0</b> constant</li>
+</ul>
+
+<p>There are more opportunities for dead code elimination that were not implemented like removing statements after a <b>return</b>. These are left as an exercise for the reader :)</p>
+
+<h2>Applying the Optimizations</h2>
+
+<p>The optimizations must be applied to all nodes in the AST in depth-first order. Depth-first is necessary to ensure that optimizations in descendant nodes propagate upwards in the tree so we can accumulate them and get the correct result. Lets check this code:</p>
+
+<pre lang="c" escaped="true">int DepthFirst()
+{
+  return 1 + 2 * 3;
+}</pre>
+
+<p>Its AST and the optimized AST are:</p>
+
+<center><table borser="0"><tr valign="center"><td><img src="avm_4_df1a.png"/></td><td width="50"></td><td><img src="avm_4_right_arrow.png"/></td><td width="50"></td><td><img src="avm_4_df1b.png"/></td></tr><tr align="center"><td>AST for source code</td><td/><td/><td/><td>Optimized AST</td></tr></table></center>
+
+<p>By traversing the tree in depth-first order, we will reach and optimize the <b>Mul</b> node first, which will result in the constant <b>6</b>, then we'll return to its parent node <b>Add</b> where it will have two constant nodes as its operands and will optimize them to the constant <b>7</b>.</p>
+
+<p>To make optimizations easier to implement we have a new method in the <b>Node</b> class:</p>
+
+<pre lang="java" escaped="true">public Node optimize()
+{
+  // No optimization.
+  return this;
+}</pre>
+
+<p><b>optimize</b> can return another node which is an optimized version of the node or simply the same node if no optimization was made. Lets take a look on this method from the <b>AddExpr</b> node:</p>
+
+<pre lang="java" escaped="true">public Node optimize()
+{
+  // Optimize operands.
+  Node left  = getLeft().optimize();
+  Node right = getRight().optimize();
+  
+  setLeft( left );
+  setRight( right );
+  
+  // Constant folding optimization.
+  if ( ( left instanceof ConstantExpr ) && ( right instanceof ConstantExpr ) )
+  {
+    ConstantExpr leftOp  = (ConstantExpr)left;
+    ConstantExpr rightOp = (ConstantExpr)right;
+    
+    Type type = leftOp.getType();
+    
+    if ( rightOp.getType() == Type.FLOAT32 )
+    {
+      type = Type.FLOAT32;
+    }
+    
+    leftOp.add( rightOp );
+    leftOp.setType( type );
+    return leftOp;
+  }
+  
+  // Constant propagation.
+  if ( left instanceof ConstantExpr )
+  {
+    ConstantExpr leftOp = (ConstantExpr)left;
+    
+    // 0 + x == x
+    if ( leftOp.isZero() )
+    {
+      return right;
+    }
+  }
+  
+  if ( right instanceof ConstantExpr )
+  {
+    ConstantExpr rightOp = (ConstantExpr)right;
+    
+    // x + 0 == x
+    if ( rightOp.isZero() )
+    {
+      return left;
+    }
+  }
+  
+  return this;
+}</pre>
+
+<p>The first thing it does is optimize both operands (remember, depth first.) After that it checks if both operands are constants and if so it evaluates the correct type for the result (remember, implicit type conversion), adds them together and return the resulting node as being its optimized version. If only one operand is constant we check if the other is <b>0</b> and return the non-<b>0</b> one as the optimized node.</p>
+
+<p>Now lets see how the <b>IfStmt</b> node does dead code elimination:</b>
+
+<pre lang="java" escaped="true">public Node optimize()
+{
+  // Optimize the condition and the bodies. Note: the "else" body can be null!
+  condition = condition.optimize();
+  whenTrue  = whenTrue.optimize();
+  
+  if ( whenFalse != null )
+  {
+    whenFalse = whenFalse.optimize();
+  }
+  
+  // Dead-code elimination.
+  // If the condition is constant, change the if statement to its "then" or "else"
+  // body depending on the condition being true or false, respectively.
+  if ( condition instanceof ConstantExpr )
+  {
+    ConstantExpr constant = (ConstantExpr)condition;
+    
+    if ( constant.isZero() )
+    {
+      if ( whenFalse != null )
+      {
+        return whenFalse;
+      }
+      constant = new ConstantExpr();
+      constant.setValue( 0 );
+      return constant;
+    }
+    else
+    {
+      return whenTrue;
+    }
+  }
+  return this;
+}</pre>
+
+<p>First we optimize the condition, the <i>then-part</i> and then the <i>else-part</i> if it's not null, and then we check for the condition. If it's the constant <b>0</b> we can swap the node by its <i>else-part</i>, returning a the <b>0</b> constant (that will be later removed) if it's null. If the condition is constant and is different from <b>0</b> we just return the <i>then-part</i>.</p>
+
+<p>Now we can change <b>Main.java</b> to generate <b>dot</b> code for the optimized AST:</p>
+
+<pre lang="java" escaped="true">import java.io.PrintWriter;
+
+import com.leiradella.sv.parser.simplec.Scanner;
+import com.leiradella.sv.parser.simplec.Parser;
+
+import com.leiradella.sv.ast.Unit;
+import com.leiradella.sv.ast.Node;
+
+public class Main
+{
+  public static void main( String[] args )
+  {
+    // Must have one argument with the file name we want to parse.
+    if ( args.length != 1 )
+    {
+      System.err.println( "USAGE: java -cp . SimpleC <inputfile>" );
+      return;
+    }
+ 
+    // Create a new scanner (lexical analyzer) that reads from the file.
+    Scanner scanner = new Scanner( args[ 0 ] );
+    // Create a new parser that pulls tokens from the scanner.
+    Parser parser = new Parser( scanner );
+    // Parse the input file.
+    Unit unit = (Unit)parser.Parse();
+    // Optimizations.
+    Node opt = unit.optimize();
+    // Dump the AST.
+    System.out.println( opt.toDot() );
+  }
+}</pre>
+
+<p>The entire source code is available for download <a href="sv.zip">here</a>.</p>
+
+<h2>‘Till Next Post!</h2>
+
+<p>In the next post, the last one on this series, we'll generate C source code targetting the SPU based on optimized ASTs. So be prepared for some serious temporary variable mess, <b>goto</b>'s sweing the code, constant formation and some optimizations only possible during code generation because they depend on the specific target processor. And we still want the generated code to be readable!</p>
+
+<p>See ya!</p>

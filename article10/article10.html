@@ -1,0 +1,171 @@
+<h1>Auto-vectorization for the Masses (part 5 of n): Code Generation, Graphs and A*</h1>
+
+<p>Part 5 of the series, you may want to read the previous articles before this one:</p>
+
+<ul>
+<li><a href="http://altdevblogaday.com/2011/05/05/auto-vectorization-for-the-masses-part-1-of-n-simplec-and-abstract-syntax-trees/">Auto-vectorization for the Masses (part 1 of n): SimpleC and Abstract Syntax Trees</a></li>
+<li><a href="http://altdevblogaday.com/2011/05/20/auto-vectorization-for-the-masses-part-2-of-n-construction-of-the-ast/">Auto-vectorization for the Masses (part 2 of n): Construction of the AST</a></li>
+<li><a href="http://altdevblogaday.com/2011/07/04/auto-vectorization-for-the-masses-part-3-of-n-semantic-validation-of-simplec-programs/">Auto-vectorization for the Masses (part 3 of n): Semantic validation of SimpleC Programs</a></li>
+<li><a href="http://altdevblogaday.com/2011/07/19/auto-vectorization-for-the-masses-part-4-of-n-optimization/">Auto-vectorization for the Masses (part 4 of n): Optimization</a></li>
+</ul>
+
+<h2>Introduction</h2>
+
+<p>I've been writing the code generation part of the SimpleC compiler, but it has proven to be much harder than I anticipated. While writing code generation for the <code>AddExpr</code>, I had to edit the code multiple times to get it right. For the SPU there are five possible outcomes for the generated code:</p>
+
+<ul>
+<li><code>d = si_fa( a, b )</code> if <code>a</code> and <code>b</code> are floats.</li>
+<li><code>d = si_a( a, b )</code> if <code>a</code> and <code>b</code> are integers.</li>
+<li><code>d = si_ai( a, b )</code> if <code>a</code> is an integer and <code>b</code> is an integer constant in [-512, 511].</li>
+<li><code>d = si_sfi( a, b )</code> if <code>a</code> is an integer and <code>b</code> is the 512 constant.</li>
+<li><code>d = si_fma( a.left, a.right, b )</code> if at least one of <code>a</code>, and <code>b</code> is of type <code>float</code> and <code>a</code> is a <code>MulExpr</code>.</li>
+</ul>
+
+<p>It may seem easy to code these three rules to generate the correct outcome but there are other factors that make it hard:</p>
+
+<ul>
+<li><code>a</code> and <code>b</code> can have different types. We have to cast the one which is an integer to a float and produce a <code>si_fa</code>.</li>
+<li>If <code>a</code> is an integer and <code>b</code> is a float constant with an integer value but outside of the natural [-512, 511] range, which one is better: assemble an integer constant with the same value of <code>b</code>, add <code>a</code> to that constant (<code>si_a</code>) and cast the result to a float (<code>si_csflt</code>), or assemble a constant from the value of <code>b</code>, cast <code>a</code> to a float (<code>si_csflt</code>) and add the two floats (<code>si_fa</code>)?</li>
+<li>We have to test for <code>a</code> being an integer constant in [-512, 511] and use <code>si_ai( b, a )</code> if b is an integer.</li>
+<li>If <code>a</code> and/or <code>b</code> is a <code>MulExpr</code> we have to produce a <code>si_fma</code>, but only if the resulting type is a float.</li>
+<li>We want to produce the sequence of instructions with the smaller cost possible.</li>
+</ul>
+
+<p>And the list goes on. It's true that some items on that list are easy to implement, but writing generating code for <code>AddExpr</code> bothered me enough to look for alternatives. One that looks promising is using graphs and <a href="http://en.wikipedia.org/wiki/A*_search_algorithm">A*</a>. I haven't implemented to whole thing yet, but I want to share what I'm thinking of doing here and hopefully get some feedback.</p>
+
+<h2>Code Generation as Data Transformation</h2>
+
+<p>Consider the <code>AddExpr</code> class in the SimpleC source code. It has two operands of type <code>Node</code> and must output a <code>Variable</code> that is the identifier that holds the result of the addition. So the question we're trying to answer is "how can we transform a tuple &lt;<code>Node</code>, <code>Node</code>&gt; into a <code>Variable</code> such that the resulting variable has the sum of the elements of the tuple?"</p>
+
+<p>So I thought I could write a set of rules describing data transformations and let the computer figure out the best outcome each time <code>AddExpr</code> (and any other AST node for that matter) is compiled. The idea was born.</p>
+
+<h2>Data Transformation as a Graph</h2>
+
+<p>The first thing we need is some way to represent the set of rules describing the possible transformations of data. Constraining ourselves only to the subset necessary to compile a <code>AddExpr</code> node, we can build a graph like this:</p>
+
+<img class="aligncenter size-full wp-image-18363" src="AddExprGraph.png" alt="Graph with data transformations for AddExpr." /><br/><font size="-1">Graph with data transformations for AddExpr</font>
+
+<p>The transformations' constraints are as follows:</p>
+
+<ul>
+<li>From &lt;<code>Node</code>&gt; to &lt;<code>int</code>&gt;: the type of <code>Node</code> is <code>Type.INT32</code>.</li>
+<li>From &lt;<code>Node</code>&gt; to &lt;<code>float</code>&gt;: the type of <code>Node</code> is <code>Type.FLOAT32</code>.</li>
+<li>From &lt;<code>Node</code>&gt; to &lt;<code>MulExpr</code>&gt;: <code>Node</code> is an instance of <code>MulExpr</code>.</li>
+<li>From &lt;<code>Node</code>&gt; to &lt;<code>ConstantExpr</code>&gt;: <code>Node</code> is an instance of <code>ConstantExpr</code>.</li>
+<li>From &lt;<code>ConstantExpr</code>&gt; to &lt;<code>s10</code>&gt;: the type of <code>ConstantExpr</code> is <code>Type.INT32</code>, and its value fits in a signed 10-bit integer.</li>
+<li>From &lt;<code>ConstantExpr</code>&gt; to &lt;<code>512</code>&gt;: the type of <code>ConstantExpr</code> is <code>Type.INT32</code>, and its value is 512.</li>
+<li>From &lt;<code>ConstantExpr</code>&gt; to &lt;<code>int</code>&gt;: the type of <code>ConstantExpr</code> is <code>Type.INT32</code>.</li>
+<li>From &lt;<code>ConstantExpr</code>&gt; to &lt;<code>float</code>&gt;: the type of <code>ConstantExpr</code> is <code>Type.FLOAT32</code>.</li>
+<li>From &lt;<code>int</code>&gt; to &lt;<code>float</code>&gt;: the type of <code>Node</code> is <code>Type.INT32</code>.</li>
+<li>From &lt;<code>MulExpr</code>, <code>float</code>&gt; to &lt;<code>add float</code>&gt;: at least one operand of <code>MulExpr</code> is of type <code>Type.FLOAT32</code>.</li>
+<li>From &lt;<code>float</code>, <code>MulExpr</code>&gt; to &lt;<code>add float</code>&gt;: at least one operand of <code>MulExpr</code> is of type <code>Type.FLOAT32</code>.</li>
+</ul>
+
+<p>Transformations also have a cost associated to them. For example, going from &lt;<code>int</code>&gt; to &lt;<code>float</code>&gt; costs 7, the cost of <code>si_csflt</code>. Some transformations don't cost anything and only serve to change the meaning of the data, as from &lt;<code>Node</code>&gt; to &lt;<code>512</code>&gt;.</p>
+
+<p>There's a problem with this graph though. It's impossible to start with &lt;<code>Node</code>, <code>Node</code>&gt;, the two operands for an addition in the abstract syntax tree, and arrive at an addition. That node isn't even in the graph! We could add it and, by combining transformations of &lt;<code>Node</code>&gt; to other nodes, build other nodes and edges that would allow us to arrive at &lt;<code>add int</code>&gt; or &lt;<code>add float</code>&gt;. But it would be painful to do this by hand, so instead we write some code that takes a &lt;<code>Node</code>, <code>Node</code>&gt; and it builds all these nodes for us, which results in the following graph:</p>
+
+<img class="aligncenter size-full wp-image-18364" src="AddExprCompleteGraph.png" alt="Complete graph with data transformations for AddExpr." /><br/><font size="-1">Complete graph with data transformations for AddExpr</font>
+
+<p>Ugh, good thing we let the computer do the work for us. It's worth noting one thing though: there aren't transformations that act on both types at the same time. For example, there isn't a transformation from &lt;<code>int</code>, <code>int</code>&gt; to &lt;<code>float</code>, <code>float</code>&gt;. This is because the same thing can be accomplished via a transformation from &lt;<code>int</code>, <code>int</code>&gt; to &lt;<code>float</code>, <code>int</code>&gt; and from it to &lt;<code>float</code>, <code>float</code>&gt;, and the cost would be the same anyway but this way the node count is smaller.</p>
+
+<p>To shrink to graph a little, we can get rid of nodes which don't have paths to the target nodes, &lt;<code>add int</code>&gt; and &lt;<code>add float</code>&gt;, since those are the ones we have to reach to perform the addition. Doing this (using the distance matrix from the next section) leads us to our final graph:</p>
+
+<img class="aligncenter size-full wp-image-18365" src="AddExprSimplifiedCompleteGraph.png" alt="Simplified graph with data transformations for AddExpr." /><br/><font size="-1">Simplified graph with data transformations for AddExpr</font>
+
+<h2>Code Generation as A*</h2>
+
+<p>With our graph in place all we have to do is give A* the start node &lt;<code>Node</code>, <code>Node</code>&gt; and one of the goal nodes, and <i>voilá</i>, our code is generated! Great, so we'll have to code A*, which is easy, and the heuristic function, which is also easy... or it's not?</p>
+
+<p>A* is largely used for path finding, meaning that nodes are spatially positioned in relation to each other like in a map or maze. In those cases, implementing the heuristic is straightforward: for the former the Euclidean distance can be used, and for the later the Manhattan distance is a better fit if only axis-aligned movements are allowed. Unfortunately none of those fits in our case; our nodes cannot be spatially positioned like that and the actual cost of an edge depends on the path to the current node so far.</p>
+
+<p>For A* to find the best path in the graph, the heuristic must be an <a href="http://en.wikipedia.org/wiki/Admissible_heuristic">admissible heuristic</a>. In short, the heuristic from node x to node y must never overestimate the actual lowest cost to go from x to y. So we have two things to consider if we are to build an admissible heuristic for our graph:</p>
+
+<ul>
+<li>Some of our edges have constraints, which are conditions that must be satisfied before the edge can be taken.</li>
+<li>Some of our edges have variable costs which depend on the data at the current node being considered in the search.</li>
+</ul>
+
+<p>The constraints are easy to deal with. If an edge has a constraint that is not satisfied at some point of the search, we can look at it as having an infinite cost. On the other hand, if the constraint can be satisfied the edge has its actual cost to be traversed. Since the heuristic must be admissible, we take the lower of these two values which is of course the actual edge cost.</p>
+
+<p>The variable cost is not hard also. If it's variable how can we be sure we're not overestimating it? An easy answer for it is to consider the cost as zero, but it makes the search slower. What we need is the actual <i>minimum</i> cost for the edge, and we know it for all edges. For example, going from &lt;<code>Node</code>&gt; to &lt;<code>int</code>&gt; means a constant must be built for the integer value of <code>Node</code>. The minimum cost for building a constant is 2 (using <code>si_il</code> or another similar constant-formation intrinsic.) Some integers will require two instructions or one odd-pipe instruction with a cost of 4 but since we're looking for the minimum cost we can take that as 2 for this case. So we can have the minimum cost of an edge as one of its attributes and use it for the heuristic if the actual edge cost is variable.</p>
+
+<p>Another thing to consider is how we can evaluate the heuristic. It must not overestimate the actual cost, and the actual cost is the cost of the cheapest path so it seems we have to find the cheapest path between two nodes to get the heuristic right, which wouldn't work since we'd be using A* to evaluate the heuristic for the A*. If that was the case we'd be better off using a breadth-first search.</p>
+
+<p>To be able to evaluate the heuristic we can use the <a href="http://en.wikipedia.org/wiki/Dijkstra%27s_algorithm">Dijkstra's algorithm</a> for all nodes and build a distance matrix. Here's one column of the matrix showing the minimum cost to get from all nodes to the two target nodes:</p>
+
+<table border="1">
+<tr><td>Source Node</td><td align="right">Distance to &lt;<code>add int</code>&gt;</td><td align="right">Distance to &lt;<code>add float</code>&gt;</td></tr>
+<tr><td>&lt;<code>Node</code>, <code>ConstantExpr</code>&gt;</td><td align="right">4</td><td align="right">8</td></tr>
+<tr><td>&lt;<code>add float</code>&gt;</td><td align="right">-</td><td align="right">0</td></tr>
+<tr><td>&lt;<code>MulExpr</code>, <code>float</code>&gt;</td><td align="right">-</td><td align="right">6</td></tr>
+<tr><td>&lt;<code>int</code>, <code>int</code>&gt;</td><td align="right">2</td><td align="right">9</td></tr>
+<tr><td>&lt;<code>int</code>, <code>s10</code>&gt;</td><td align="right">2</td><td align="right">9</td></tr>
+<tr><td>&lt;<code>int</code>, <code>float</code>&gt;</td><td align="right">-</td><td align="right">13</td></tr>
+<tr><td>&lt;<code>MulExpr</code>, <code>Node</code>&gt;</td><td align="right">-</td><td align="right">8</td></tr>
+<tr><td>&lt;<code>ConstantExpr</code>, <code>float</code>&gt;</td><td align="right">-</td><td align="right">8</td></tr>
+<tr><td>&lt;<code>s10</code>, <code>Node</code>&gt;</td><td align="right">4</td><td align="right">11</td></tr>
+<tr><td>&lt;<code>Node</code>, <code>Node</code>&gt;</td><td align="right">4</td><td align="right">8</td></tr>
+<tr><td>&lt;<code>add int</code>&gt;</td><td align="right">0</td><td align="right">7</td></tr>
+<tr><td>&lt;<code>float</code>, <code>ConstantExpr</code>&gt;</td><td align="right">-</td><td align="right">8</td></tr>
+<tr><td>&lt;<code>Node</code>, <code>512</code>&gt;</td><td align="right">4</td><td align="right">11</td></tr>
+<tr><td>&lt;<code>Node</code>, <code>int</code>&gt;</td><td align="right">2</td><td align="right">9</td></tr>
+<tr><td>&lt;<code>int</code>, <code>ConstantExpr</code>&gt;</td><td align="right">2</td><td align="right">9</td></tr>
+<tr><td>&lt;<code>ConstantExpr</code>, <code>ConstantExpr</code>&gt;</td><td align="right">4</td><td align="right">10</td></tr>
+<tr><td>&lt;<code>int</code>, <code>512</code>&gt;</td><td align="right">2</td><td align="right">9</td></tr>
+<tr><td>&lt;<code>int</code>, <code>Node</code>&gt;</td><td align="right">2</td><td align="right">9</td></tr>
+<tr><td>&lt;<code>float</code>, <code>float</code>&gt;</td><td align="right">-</td><td align="right">6</td></tr>
+<tr><td>&lt;<code>ConstantExpr</code>, <code>512</code>&gt;</td><td align="right">4</td><td align="right">11</td></tr>
+<tr><td>&lt;<code>512</code>, <code>Node</code>&gt;</td><td align="right">4</td><td align="right">11</td></tr>
+<tr><td>&lt;<code>float</code>, <code>Node</code>&gt;</td><td align="right">-</td><td align="right">6</td></tr>
+<tr><td>&lt;<code>MulExpr</code>, <code>int</code>&gt;</td><td align="right">-</td><td align="right">13</td></tr>
+<tr><td>&lt;<code>float</code>, <code>MulExpr</code>&gt;</td><td align="right">-</td><td align="right">6</td></tr>
+<tr><td>&lt;<code>Node</code>, <code>float</code>&gt;</td><td align="right">-</td><td align="right">6</td></tr>
+<tr><td>&lt;<code>int</code>, <code>MulExpr</code>&gt;</td><td align="right">-</td><td align="right">13</td></tr>
+<tr><td>&lt;<code>512</code>, <code>int</code>&gt;</td><td align="right">2</td><td align="right">9</td></tr>
+<tr><td>&lt;<code>ConstantExpr</code>, <code>s10</code>&gt;</td><td align="right">4</td><td align="right">11</td></tr>
+<tr><td>&lt;<code>Node</code>, <code>MulExpr</code>&gt;</td><td align="right">-</td><td align="right">8</td></tr>
+<tr><td>&lt;<code>512</code>, <code>ConstantExpr</code>&gt;</td><td align="right">4</td><td align="right">11</td></tr>
+<tr><td>&lt;<code>ConstantExpr</code>, <code>int</code>&gt;</td><td align="right">2</td><td align="right">9</td></tr>
+<tr><td>&lt;<code>s10</code>, <code>int</code>&gt;</td><td align="right">2</td><td align="right">9</td></tr>
+<tr><td>&lt;<code>float</code>, <code>int</code>&gt;</td><td align="right">-</td><td align="right">13</td></tr>
+<tr><td>&lt;<code>s10</code>, <code>ConstantExpr</code>&gt;</td><td align="right">4</td><td align="right">11</td></tr>
+<tr><td>&lt;<code>ConstantExpr</code>, <code>MulExpr</code>&gt;</td><td align="right">-</td><td align="right">8</td></tr>
+<tr><td>&lt;<code>ConstantExpr</code>, <code>Node</code>&gt;</td><td align="right">4</td><td align="right">8</td></tr>
+<tr><td>&lt;<code>Node</code>, <code>s10</code>&gt;</td><td align="right">4</td><td align="right">11</td></tr>
+<tr><td>&lt;<code>MulExpr</code>, <code>ConstantExpr</code>&gt;</td><td align="right">-</td><td align="right">8</td></tr>
+</table>
+
+<p>It's interesting to note that not all source nodes arrive at &lt;<code>add int</code>&gt;, but all of them arrive at &lt;<code>add float</code>&gt;. This is because we have edges from &lt;<code>int</code>&gt; to &lt;<code>float</code>&gt; and from &lt;<code>add int</code>&gt; to &lt;<code>add float</code>&gt; so if it's possible to arrive at &lt;<code>add int</code>&gt; it's also possible to arrive at &lt;<code>add float</code>&gt;.</p>
+
+<p>Well, with our graph and search algorithm in place we can finally start generating code. Well, almost. There's still one problem: how do we dynamically evaluate edge constraints and variable costs? We're lucky because there's already a library that does exactly this, evaluates Java source code contained in strings: <a href="http://www.beanshell.org/">BeanShell</a>.
+
+<h2>Evaluating Constraints and Costs</h2>
+
+<p>I didn't code this part yet, but I've used BeanShell before and it delivers on its promises. I can't see anything that would prevent us from evaluating constraints and costs which is the last barrier to have actual generated code. I'll keep working on this line and hopefully have something to write about in a month or so (no promises though!)</p>
+
+<h2>Conclusion</h2>
+
+<p>This has been a lot of work, but I strongly believe it'll prove to be a huge time saver considering the amount of work I had with <code>AddExpr</code>. But there are many more benefits:</p>
+
+<ul>
+<li>We don't have to write the same code twice. <code>SubExpr</code>, for instance, would be very similar to <code>AddExpr</code>, and many transformations are already in place and won't have to be coded again.</li>
+<li>We don't have to write any code at all! I mean, after putting things in place, compiling another type of node will be just a matter of adding the necessary transformations to the graph.</li>
+<li>It's very easy to add more transformations that lead to more optimizations, such as from &lt;<code>ConstantExpr</code>&gt; to a power of two integer and generate code for <code>MulExpr</code> as left shifts.</li>
+<li>The computer is much better for finding the best path in a graph than we are, so I expect that the generated code will be better. We have to give it the correct transformations though...</li>
+<li>Targeting other architectures are easier, it's just a matter of writing the transformations and feed them to the engine.</li>
+</ul>
+
+<p>I'm also excited with the possibilities:</p>
+
+<ul>
+<li>Transformations from &lt;<code>ConstantExpr</code>&gt; to either &lt;<code>int</code>&gt; or &lt;<code>float</code>&gt; will be done by calling a method that builds the actual constant using constant-formation intrinsics. But I think this process should be part of the path finding, not only because the A* will figure out the best way to build the constants, but because there are possibly good optimizations such as integer multiplication when one factor is a constant with some properties (like the upper 16 bits being zero.)</li>
+<li>By adding the right transformations I believe optimizations using intrinsics like <code>si_nand</code>, <code>si_nor</code> and <code>si_andc</code> will automagically emerge.</li>
+<li>If we add methods to query what code has already been generated, we could have transformations using the odd pipe to reduce the cost of the code.</li>
+<li>Who knows what we can accomplish after adding all nodes that are arithmetic operations? Instead of compiling each node separately, we could feed the search with an &lt;<code>Expression</code>&gt; and let A* figure out the best code for the entire expression!</li>
+<li>What about adding all nodes from the AST? Think of global optimization, automatic inlining of functions... Ok, now I'm just on a trip now. I don't really believe these kinds of things are possible without a higher-level coordination of the code generation process.</li>
+</ul>
+
+<p>Thanks for reading so far. Please use the comments section below and give me some feedback. Tell me what's right and what's wrong with this approach to code generation. Tell me what more it can accomplish or point me to a fundamental flaw in my train of thought that will kill it. Either way, thank you!</p>
+
+<p>See ya!</p>
