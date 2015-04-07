@@ -43,7 +43,7 @@
 
 <p>The first thing we need is some way to represent the set of rules describing the possible transformations of data. Constraining ourselves only to the subset necessary to compile a <code>AddExpr</code> node, we can build a graph like this:</p>
 
-<img class="aligncenter size-full wp-image-18363" src="AddExprGraph.png" alt="Graph with data transformations for AddExpr." /><br/><font size="-1">Graph with data transformations for AddExpr</font>
+<img class="aligncenter size-full wp-image-18363" src="http://htmlpreview.github.io/?https://raw.github.com/leiradel/altdevblogaday/blob/master/article10/AddExprGraph.png" alt="Graph with data transformations for AddExpr." /><br/><font size="-1">Graph with data transformations for AddExpr</font>
 
 <p>The transformations' constraints are as follows:</p>
 
@@ -65,13 +65,13 @@
 
 <p>There's a problem with this graph though. It's impossible to start with &lt;<code>Node</code>, <code>Node</code>&gt;, the two operands for an addition in the abstract syntax tree, and arrive at an addition. That node isn't even in the graph! We could add it and, by combining transformations of &lt;<code>Node</code>&gt; to other nodes, build other nodes and edges that would allow us to arrive at &lt;<code>add int</code>&gt; or &lt;<code>add float</code>&gt;. But it would be painful to do this by hand, so instead we write some code that takes a &lt;<code>Node</code>, <code>Node</code>&gt; and it builds all these nodes for us, which results in the following graph:</p>
 
-<img class="aligncenter size-full wp-image-18364" src="AddExprCompleteGraph.png" alt="Complete graph with data transformations for AddExpr." /><br/><font size="-1">Complete graph with data transformations for AddExpr</font>
+<img class="aligncenter size-full wp-image-18364" src="http://htmlpreview.github.io/?https://raw.github.com/leiradel/altdevblogaday/blob/master/article10/AddExprCompleteGraph.png" alt="Complete graph with data transformations for AddExpr." /><br/><font size="-1">Complete graph with data transformations for AddExpr</font>
 
 <p>Ugh, good thing we let the computer do the work for us. It's worth noting one thing though: there aren't transformations that act on both types at the same time. For example, there isn't a transformation from &lt;<code>int</code>, <code>int</code>&gt; to &lt;<code>float</code>, <code>float</code>&gt;. This is because the same thing can be accomplished via a transformation from &lt;<code>int</code>, <code>int</code>&gt; to &lt;<code>float</code>, <code>int</code>&gt; and from it to &lt;<code>float</code>, <code>float</code>&gt;, and the cost would be the same anyway but this way the node count is smaller.</p>
 
 <p>To shrink to graph a little, we can get rid of nodes which don't have paths to the target nodes, &lt;<code>add int</code>&gt; and &lt;<code>add float</code>&gt;, since those are the ones we have to reach to perform the addition. Doing this (using the distance matrix from the next section) leads us to our final graph:</p>
 
-<img class="aligncenter size-full wp-image-18365" src="AddExprSimplifiedCompleteGraph.png" alt="Simplified graph with data transformations for AddExpr." /><br/><font size="-1">Simplified graph with data transformations for AddExpr</font>
+<img class="aligncenter size-full wp-image-18365" src="http://htmlpreview.github.io/?https://raw.github.com/leiradel/altdevblogaday/blob/master/article10/AddExprSimplifiedCompleteGraph.png" alt="Simplified graph with data transformations for AddExpr." /><br/><font size="-1">Simplified graph with data transformations for AddExpr</font>
 
 <h2>Code Generation as A*</h2>
 
